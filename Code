@@ -1,0 +1,292 @@
+#define BLYNK_TEMPLATE_ID "TMPL65Cr48kVz"
+#define BLYNK_TEMPLATE_NAME "esp32 Deteksi Kualitas udara"
+#define BLYNK_AUTH_TOKEN "Fi7MH7-MeqtaCCRH3AMdWGFxfjHeiR9q"
+
+#include <WiFi.h>
+#include <WiFiUdp.h>
+#include <BlynkSimpleEsp32.h>
+#include <DHT.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include "time.h"
+
+// Konfigurasi Pin
+#define DHTPIN 4
+#define DHTTYPE DHT22
+#define MQ135_PIN 34
+#define LED_HIJAU 12
+#define LED_KUNING 14
+#define LED_MERAH 27
+#define BUZZER_PIN 26
+
+// Konfigurasi Kredensial WiFi (Default Wokwi Simulator)
+const char* ssid = "Ishhhh"; 
+const char* pass = "satuduatiga";            
+
+// Konfigurasi OLED
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+
+// Inisialisasi Sensor DHT
+DHT dht(DHTPIN, DHTTYPE);
+
+// Variabel Penampung Data
+float suhu = 0.0;
+float kelembapan = 0.0;
+int aqi = 0;
+float ppmGas = 0.0;
+String statusUdara = "Mendeteksi...";
+
+// Variabel Grafik OLED
+int graphData[128]; 
+
+// Konstanta Kalibrasi MQ-135 (Pendekatan CO2/Asap)
+const float RL_BOARD = 1.0; 
+const float RO_CLEAN_AIR = 3.6; 
+const float REGRES_A = 110.47;  
+const float REGRES_B = -2.862;  
+
+// Konfigurasi NTP Time
+const char* ntpServer = "pool.ntp.org";
+const long  gmtOffset_sec = 25200; // UTC+7 untuk WIB
+const int   daylightOffset_sec = 0;
+bool ntpSynced = false;
+
+BlynkTimer timer;
+unsigned long lastBuzzerMillis = 0;
+bool buzzerState = false;
+int lastNotifState = 0; 
+
+// Fungsi mendapatkan waktu dari NTP
+String getClockTime() {
+  struct tm timeinfo;
+  if(!getLocalTime(&timeinfo)){
+    return "No Time";
+  }
+  char timeStringBuff[50];
+  strftime(timeStringBuff, sizeof(timeStringBuff), "%H:%M:%S", &timeinfo);
+  return String(timeStringBuff);
+}
+
+// Fungsi Hitung PPM MQ-135 berdasarkan Regresi Linear
+float hitungPPM(int adcVal) {
+  if (adcVal >= 4095) adcVal = 4094;
+  if (adcVal <= 0) adcVal = 1;
+  float v_in = (adcVal * 3.3) / 4095.0; 
+  float rs = ((3.3 * RL_BOARD) / v_in) - RL_BOARD;
+  float ratio = rs / RO_CLEAN_AIR;
+  float ppm = REGRES_A * pow(ratio, REGRES_B);
+  return ppm;
+}
+
+// Fungsi Update Grafik OLED
+void updateGraph(int val) {
+  for (int i = 0; i < SCREEN_WIDTH - 1; i++) {
+    graphData[i] = graphData[i + 1];
+  }
+  int mappedVal = map(val, 0, 300, 0, 20); 
+  mappedVal = constrain(mappedVal, 0, 20);
+  graphData[SCREEN_WIDTH - 1] = 63 - mappedVal; 
+}
+
+// Fungsi utama pemrosesan data (Dipanggil berkala oleh BlynkTimer)
+void prosesDataSistem() {
+  float bacaSuhu = dht.readTemperature();
+  float bacaKelembapan = dht.readHumidity();
+  int rawADC = analogRead(MQ135_PIN);
+  
+  if (isnan(bacaSuhu) || isnan(bacaKelembapan)) {
+    suhu = 0.0;
+    kelembapan = 0.0;
+  } else {
+    suhu = bacaSuhu;
+    kelembapan = bacaKelembapan;
+  }
+
+  ppmGas = hitungPPM(rawADC);
+  aqi = (int)ppmGas; 
+
+  // Logika Kualitas Udara & LED
+  if (aqi <= 100) { 
+    statusUdara = "BAIK";
+    digitalWrite(LED_HIJAU, HIGH);
+    digitalWrite(LED_KUNING, LOW);
+    digitalWrite(LED_MERAH, LOW);
+    lastNotifState = 0;
+  } 
+  else if (aqi > 100 && aqi <= 300) { 
+    statusUdara = "BURUK";
+    digitalWrite(LED_HIJAU, LOW);
+    digitalWrite(LED_KUNING, HIGH);
+    digitalWrite(LED_MERAH, LOW);
+    
+    if (WiFi.status() == WL_CONNECTED && lastNotifState != 1) {
+      Blynk.logEvent("udara_buruk", "Peringatan! Kualitas Udara Buruk!");
+      lastNotifState = 1;
+    }
+  } 
+  else { 
+    statusUdara = "BAHAYA!!!";
+    digitalWrite(LED_HIJAU, LOW);
+    digitalWrite(LED_KUNING, LOW);
+    digitalWrite(LED_MERAH, HIGH);
+    
+    if (WiFi.status() == WL_CONNECTED && lastNotifState != 2) {
+      Blynk.logEvent("udara_berbahaya", "Bahaya! Kualitas Udara Sangat Buruk!");
+      lastNotifState = 2;
+    }
+  }
+
+  updateGraph(aqi);
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Blynk.virtualWrite(V1, aqi);
+    Blynk.virtualWrite(V2, suhu);
+    Blynk.virtualWrite(V3, kelembapan);
+    Blynk.virtualWrite(V4, statusUdara);
+  }
+}
+
+// Fungsi Pengaturan Bunyi Buzzer menggunakan TONE (Agar bunyi di Wokwi)
+void kendaliBuzzer() {
+  unsigned long currentMillis = millis();
+  
+  if (statusUdara == "BURUK") {
+    if (currentMillis - lastBuzzerMillis >= 500) {
+      lastBuzzerMillis = currentMillis;
+      buzzerState = !buzzerState;
+      if (buzzerState) {
+        tone(BUZZER_PIN, 1000); 
+      } else {
+        noTone(BUZZER_PIN);     
+      }
+    }
+  } 
+  else if (statusUdara == "BAHAYA!!!") {
+    tone(BUZZER_PIN, 2000); 
+  } 
+  else {
+    noTone(BUZZER_PIN); 
+  }
+}
+
+// Fungsi Cek WiFi berkala
+void checkWiFiConnection() {
+  if (WiFi.status() != WL_CONNECTED) {
+    WiFi.disconnect();
+    WiFi.begin(ssid, pass);
+    if (WiFi.status() == WL_CONNECTED && !ntpSynced) {
+      configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+      ntpSynced = true;
+    }
+  }
+}
+
+// Fungsi Tampilan OLED
+void updateOLED() {
+  display.clearDisplay();
+  
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  
+  if(WiFi.status() == WL_CONNECTED) {
+    display.print("MONITOR");
+  } else {
+    display.print("MONITOR [OFF]");
+  }
+  
+  display.setCursor(80, 0);
+  display.print(getClockTime());
+  
+  display.drawLine(0, 10, 128, 10, SSD1306_WHITE); 
+  
+  display.setCursor(0, 15);
+  display.printf("Temp: %.1f C", suhu);
+  display.setCursor(75, 15);
+  display.printf("H: %.0f%%", kelembapan);
+  
+  display.setCursor(0, 28);
+  display.setTextSize(2);
+  display.printf("%d", aqi);
+  
+  display.setTextSize(1);
+  display.setCursor(50, 28);
+  display.print("AQI status:");
+  display.setCursor(50, 38);
+  display.print(statusUdara);
+  
+  for (int i = 0; i < SCREEN_WIDTH; i++) {
+    if (graphData[i] != 0) {
+      display.drawPixel(i, graphData[i], SSD1306_WHITE);
+    }
+  }
+  
+  display.display();
+}
+
+void setup() {
+  Serial.begin(115200);
+  
+  pinMode(LED_HIJAU, OUTPUT);
+  pinMode(LED_KUNING, OUTPUT);
+  pinMode(LED_MERAH, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) { 
+    Serial.println(F("SSD1306 OLED gagal"));
+    for(;;);
+  }
+  
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(10, 20);
+  display.print("Connecting WiFi...");
+  display.display();
+
+  dht.begin();
+
+  Serial.print("Menghubungkan ke: ");
+  Serial.println(ssid);
+  WiFi.begin(ssid, pass);
+  
+  int timeout_counter = 0;
+  while (WiFi.status() != WL_CONNECTED && timeout_counter < 20) {
+    delay(500);
+    Serial.print(".");
+    timeout_counter++;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nWiFi Terhubung!");
+    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+    ntpSynced = true;
+    Blynk.config(BLYNK_AUTH_TOKEN);
+    Blynk.connect();
+  } else {
+    Serial.println("\nWiFi Gagal terhubung.");
+  }
+
+  for(int i=0; i<SCREEN_WIDTH; i++) graphData[i] = 63;
+
+  timer.setInterval(2000L, prosesDataSistem);       
+  timer.setInterval(10000L, checkWiFiConnection);   
+}
+
+void loop() {
+  if (WiFi.status() == WL_CONNECTED) {
+    Blynk.run();
+  }
+  
+  timer.run();
+  kendaliBuzzer(); 
+  
+  static unsigned long lastOLEDUpdate = 0;
+  if (millis() - lastOLEDUpdate > 500) { 
+    lastOLEDUpdate = millis();
+    updateOLED();
+  }
+}
