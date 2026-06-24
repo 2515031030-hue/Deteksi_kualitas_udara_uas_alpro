@@ -21,8 +21,8 @@
 #define BUZZER_PIN 26
 
 // Konfigurasi Kredensial WiFi (Default Wokwi Simulator)
-const char* ssid = "Ishhhh"; 
-const char* pass = "satuduatiga";            
+const char* ssid = "Wokwi-GUEST"; 
+const char* pass = "";            
 
 // Konfigurasi OLED
 #define SCREEN_WIDTH 128
