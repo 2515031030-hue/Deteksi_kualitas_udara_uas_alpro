@@ -1,0 +1,31 @@
+Cara Menjalankan Program
+
+1. Buka proyek menggunakan Arduino IDE atau Wokwi Simulator.
+2. Pastikan board yang digunakan adalah ESP32 Dev Module.
+3. Install library yang diperlukan:
+   - Blynk
+   - DHT Sensor Library
+   - Adafruit SSD1306
+   - Adafruit GFX
+4. Sesuaikan konfigurasi WiFi dan Blynk pada program jika menggunakan perangkat nyata.
+5. Hubungkan komponen sesuai pin yang telah ditentukan:
+   - DHT22 → GPIO 4
+   - MQ-135 → GPIO 34
+   - LED Hijau → GPIO 12
+   - LED Kuning → GPIO 14
+   - LED Merah → GPIO 27
+   - Buzzer → GPIO 26
+   - OLED SDA → GPIO 21
+   - OLED SCL → GPIO 22
+6. Upload program ke ESP32 atau jalankan simulasi pada Wokwi.
+7. Setelah ESP32 terhubung ke WiFi, sistem akan mulai membaca data dari sensor DHT22 dan MQ-135 secara otomatis.
+8. Nilai suhu, kelembapan, AQI, status kualitas udara, dan grafik pemantauan akan ditampilkan pada OLED.
+9. Data sensor juga akan dikirim ke dashboard Blynk melalui Virtual Pin:
+   - V1 : AQI
+   - V2 : Suhu
+   - V3 : Kelembapan
+   - V4 : Status Kualitas Udara
+10. Sistem akan memberikan indikator LED dan alarm buzzer sesuai kondisi kualitas udara:
+    - Baik (AQI ≤ 100) → LED Hijau menyala.
+    - Buruk (100 < AQI ≤ 300) → LED Kuning menyala dan buzzer berbunyi berkala.
+    - Bahaya (AQI > 300) → LED Merah menyala dan buzzer berbunyi terus-menerus.
